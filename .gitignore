@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+models/
+temp_record.wav
+reply_audio.mp3
+reply_audio.wav
