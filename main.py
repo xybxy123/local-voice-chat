@@ -41,16 +41,33 @@ def main():
     device_idx_input = input("\n请选择输入设备序号 (直接回车将使用系统默认设备): ")
     device_idx = int(device_idx_input) if device_idx_input.isdigit() else None
 
+    threshold_input = input("请输入音量阈值 (默认 700，越大越不敏感): ").strip()
+    volume_threshold = int(threshold_input) if threshold_input.isdigit() else 700
+
+    silence_input = input("请输入静音结束时长秒数 (默认 1.0): ").strip()
+    try:
+        silence_duration = float(silence_input) if silence_input else 1.0
+    except ValueError:
+        silence_duration = 1.0
+
     while True:
         audio_file = "temp_record.wav"
-        record_audio(output_filename=audio_file, device_index=device_idx, duration=5)
+        recorded_file = record_audio(
+            output_filename=audio_file,
+            device_index=device_idx,
+            duration=None,
+            volume_threshold=volume_threshold,
+            silence_duration=silence_duration,
+            max_duration=15.0,
+            print_volume=True,
+        )
 
-        if not os.path.exists(audio_file):
-            print("[-] 录音失败未能生成文件，程序退出。")
-            return
+        if not recorded_file or not os.path.exists(recorded_file):
+            print("[-] 本轮未录到有效语音，请调整阈值后重试。")
+            continue
 
         print("\n[步骤 2: 音频解码与文字识别]")
-        text = audio_to_text(audio_file)
+        text = audio_to_text(recorded_file)
 
         print("\n[步骤 3: 请求 AI 大模型]")
         if text:

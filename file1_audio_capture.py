@@ -1,4 +1,7 @@
 import os
+import audioop
+import time
+from collections import deque
 from contextlib import contextmanager
 
 os.environ.setdefault("JACK_NO_START_SERVER", "1")
@@ -51,7 +54,16 @@ def list_input_devices():
 
 
 def record_audio(
-    output_filename="output.wav", device_index=None, duration=5, rate=16000, chunk=1024
+    output_filename="output.wav",
+    device_index=None,
+    duration=None,
+    rate=16000,
+    chunk=1024,
+    volume_threshold=700,
+    silence_duration=1.0,
+    max_duration=15.0,
+    print_volume=True,
+    volume_print_interval=0.08,
 ):
     with suppress_stderr():
         p = pyaudio.PyAudio()
@@ -82,14 +94,80 @@ def record_audio(
         p.terminate()
         return None
 
-    print(f"[*] 开始录音... (大约 {duration} 秒, {actual_rate}Hz)")
+    chunk_seconds = chunk / actual_rate
+    print(
+        f"[*] 开始录音... (阈值模式, threshold={volume_threshold}, 最大 {max_duration} 秒, {actual_rate}Hz)"
+    )
+
     frames = []
-    for _ in range(0, int(actual_rate / chunk * duration)):
-        try:
-            data = stream.read(chunk, exception_on_overflow=False)
+
+    if duration is not None:
+        for _ in range(0, int(actual_rate / chunk * duration)):
+            try:
+                data = stream.read(chunk, exception_on_overflow=False)
+                frames.append(data)
+            except OSError as e:
+                print(f"[-] 读取音频帧时略过错误: {e}")
+    else:
+        pre_roll = deque(maxlen=max(1, int(0.2 / chunk_seconds)))
+        silence_chunks_limit = max(1, int(silence_duration / chunk_seconds))
+        max_chunks = max(1, int(max_duration / chunk_seconds))
+
+        started = False
+        silence_chunks = 0
+        last_print_time = 0.0
+
+        for _ in range(max_chunks):
+            try:
+                data = stream.read(chunk, exception_on_overflow=False)
+            except OSError as e:
+                print(f"[-] 读取音频帧时略过错误: {e}")
+                continue
+
+            rms = audioop.rms(data, 2)
+
+            if print_volume:
+                now = time.monotonic()
+                if now - last_print_time >= volume_print_interval:
+                    level = min(50, int(rms / 70))
+                    bar = "#" * level + "-" * (50 - level)
+                    state = "REC" if started else "WAIT"
+                    mark = "*" if rms >= volume_threshold else " "
+                    print(
+                        f"\r[音量监控] {state} RMS={rms:4d} 阈值={volume_threshold:4d}{mark} [{bar}]",
+                        end="",
+                        flush=True,
+                    )
+                    last_print_time = now
+
+            if not started:
+                pre_roll.append(data)
+                if rms >= volume_threshold:
+                    started = True
+                    frames.extend(pre_roll)
+                    silence_chunks = 0
+                continue
+
             frames.append(data)
-        except OSError as e:
-            print(f"[-] 读取音频帧时略过错误: {e}")
+
+            if rms < volume_threshold:
+                silence_chunks += 1
+                if silence_chunks >= silence_chunks_limit:
+                    break
+            else:
+                silence_chunks = 0
+
+        if not started:
+            if print_volume:
+                print()
+            print("[-] 未检测到达到阈值的语音，跳过本轮录音。")
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            return None
+
+    if print_volume:
+        print()
 
     print("[*] 录音结束.")
     stream.stop_stream()
